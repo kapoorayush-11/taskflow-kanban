@@ -19,9 +19,18 @@ This project runs on **Node 16**. Do not upgrade Vite past 4.x (requires Node 18
 ## Architecture
 
 ### State & Persistence
-All app state lives in `src/context/AppContext.tsx` via a single `useReducer`. Every mutation dispatches an action and the effect writes the full state to `localStorage` under key `kanban_app_v1` as `{ projects: Project[], tasks: Task[] }`. `activeProjectId` is intentionally NOT persisted — it resets to the first project on load.
+All app state lives in `src/context/AppContext.tsx` via a single `useReducer`. The actions are **generic and id-keyed** — `HYDRATE`, `UPSERT_PROJECT` / `REMOVE_PROJECT`, `UPSERT_TASKS` / `REMOVE_TASK`, `SET_ACTIVE_PROJECT`. Mutation methods (`createTask`, `moveTask`, …) build the *full* record themselves (id, timestamps, contiguous `order`), dispatch it locally for an optimistic update, **and** write it to the backend. Because state is keyed by id, an optimistic write and the realtime echo of that same row reconcile idempotently — no duplicates.
 
-A `loaded` boolean guards the save effect so it never runs on the initial empty state before `INIT` has fired, preventing accidental localStorage overwrites on mount.
+Persistence is **dual-mode** (see Backend below): with Supabase configured the cloud DB is the source of truth; otherwise the full state is saved to `localStorage` under key `kanban_app_v1` as `{ projects, tasks }`. The save effect is gated by `if (!loaded || supabase) return`, so it runs only in fallback mode and never overwrites on the initial empty mount (`loaded` flips true after `HYDRATE`). `activeProjectId` is never persisted — it resets to the first project on load.
+
+Mutation callbacks are stable (`useCallback` with `[]` deps) and read the latest state through a `stateRef` mirror, so they don't churn the DnD hook's memoized handlers.
+
+### Backend (Supabase)
+`src/lib/supabase.ts` builds the client from `import.meta.env.VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`. If either is missing, `supabase` is `null` and `isSupabaseEnabled` is `false`, and the app silently falls back to localStorage — so it builds and runs with no backend. **These are Vite build-time vars**, baked into the bundle, so they must exist at build time: a local `.env` (gitignored; `.env.example` is the template) and Vercel's Environment Variables for the deployed build. The anon key is public by design — access is governed by Row Level Security, not by hiding the key.
+
+When enabled, `AppContext` hydrates from Supabase on mount and opens a realtime channel; `postgres_changes` events dispatch the same generic `UPSERT_*` / `REMOVE_*` actions, so other users' edits stream in live. Each mutation method also fires a fire-and-forget write (`.then(logWrite(...))`, never awaited — a failed sync logs to console but can't block the UI).
+
+DB columns are snake_case; `toRow`/`fromRow` in `supabase.ts` map them to the camelCase app types — note `order` → `sort_order` (reserved word), and timestamps + `due_date` are stored as `text` for exact round-trip. The schema, **permissive demo RLS policies (anon full access — demo-grade, not production-secure)**, and the realtime publication live in `supabase/schema.sql`; run it once in the Supabase SQL editor. The Header shows a Live/Local badge driven by `isSupabaseEnabled`.
 
 ### Theme System
 `src/context/ThemeContext.tsx` toggles a `dark` class on `document.documentElement`. Tailwind's `darkMode: 'class'` strategy picks this up. Theme is saved to `localStorage` under `kanban_theme` and auto-detects system preference on first visit. The toggle button lives in `Header.tsx`.
@@ -30,8 +39,8 @@ A `loaded` boolean guards the save effect so it never runs on the initial empty 
 `src/hooks/useKanbanDnd.ts` owns all `@dnd-kit` wiring. Key decisions:
 - `PointerSensor` with `distance: 5` activation — prevents accidental drag on card click
 - `closestCorners` collision detection — handles dropping onto empty columns (closestCenter fails there)
-- `onDragOver` does an **optimistic** `MOVE_TASK` dispatch when a card crosses column boundaries for live feedback
-- `onDragEnd` commits the final sort order via `REORDER_TASKS`
+- `onDragOver` calls `moveTask` only when a card **crosses** a column boundary (a few times per drag, not continuously) — it optimistically reindexes the destination column locally and upserts those rows to the backend
+- `onDragEnd` calls `reorderTasks` to commit the final within-column order (also persisted)
 - Column droppable IDs are the `ColumnId` string literals (`'todo'`, `'in-progress'`, `'done'`); task sortable IDs are UUIDs — they must stay distinguishable
 
 ### Task Ordering
