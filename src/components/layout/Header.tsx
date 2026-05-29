@@ -4,6 +4,7 @@ import { useApp } from '../../context/AppContext'
 import { useTheme } from '../../context/ThemeContext'
 import { COLUMN_IDS, COLUMN_META } from '../../constants'
 import { getColumnTasks } from '../../utils/taskUtils'
+import { isSupabaseEnabled } from '../../lib/supabase'
 
 interface HeaderProps {
   view: AppView
@@ -72,6 +73,27 @@ export function Header({ view, project, onAddTask, onMenuClick }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-2">
+        {/* Backend status */}
+        <span
+          className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
+            isSupabaseEnabled
+              ? 'bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400'
+              : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'
+          }`}
+          title={
+            isSupabaseEnabled
+              ? 'Connected to the shared cloud database — changes sync to your whole team in real time'
+              : 'Local only — data is saved in this browser'
+          }
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              isSupabaseEnabled ? 'bg-emerald-500 dark:bg-emerald-400 animate-pulse' : 'bg-gray-400 dark:bg-gray-500'
+            }`}
+          />
+          {isSupabaseEnabled ? 'Live' : 'Local'}
+        </span>
+
         {/* Theme toggle */}
         <button
           onClick={toggleTheme}
